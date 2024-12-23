@@ -1,0 +1,1941 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 17.2
+-- Dumped by pg_dump version 17.2
+
+-- Started on 2024-12-23 15:02:14
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- TOC entry 265 (class 1255 OID 26762)
+-- Name: bilet_satisi_yap(integer, integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.bilet_satisi_yap(p_bilet_id integer, p_musteri_id integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- İlgili bilet_id'nin musteri_id'sini güncelle
+    UPDATE bilet
+    SET musteri_id = p_musteri_id
+    WHERE bilet_id = p_bilet_id;
+
+    -- Eğer ilgili bilet_id yoksa uyarı mesajı
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Girilen bilet_id: % bulunamadı.', p_bilet_id;
+    END IF;
+END;
+$$;
+
+
+ALTER FUNCTION public.bilet_satisi_yap(p_bilet_id integer, p_musteri_id integer) OWNER TO postgres;
+
+--
+-- TOC entry 267 (class 1255 OID 26622)
+-- Name: check_disjoint_rule(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.check_disjoint_rule() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Eğer kullanıcı id'si hem admin hem de customer tablosunda varsa, hata döndür
+    IF EXISTS (SELECT 1 FROM yonetici WHERE kullanici_id = NEW.kullanici_id) 
+       OR EXISTS (SELECT 1 FROM musteri WHERE kullanici_id = NEW.kullanici_id) THEN
+        RAISE EXCEPTION 'Kullanıcı hem admin hem de customer olamaz!';
+    END IF;
+    
+    -- İşlem başarılıysa devam et
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.check_disjoint_rule() OWNER TO postgres;
+
+--
+-- TOC entry 253 (class 1255 OID 26612)
+-- Name: check_total_inheritance_before_insert(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.check_total_inheritance_before_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Eğer kullanıcı ne Yönetici ne de Müşteri ise, hata verir
+    IF NOT EXISTS (SELECT 1 FROM Yonetici WHERE kullanici_id = NEW.kullanici_id) 
+       AND NOT EXISTS (SELECT 1 FROM Musteri WHERE kullanici_id = NEW.kullanici_id) THEN
+        RAISE EXCEPTION 'Her Kullanıcı, bir Yönetici ya da bir Müşteri olmalıdır!';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.check_total_inheritance_before_insert() OWNER TO postgres;
+
+--
+-- TOC entry 254 (class 1255 OID 25268)
+-- Name: check_unique_email_before_insert(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.check_unique_email_before_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Eğer e-posta adresi zaten var ise hata verir
+    IF EXISTS (SELECT 1 FROM Musteri WHERE email = NEW.email) THEN
+        RAISE EXCEPTION 'Bu e-posta adresi zaten kullanılmaktadır!';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.check_unique_email_before_insert() OWNER TO postgres;
+
+--
+-- TOC entry 271 (class 1255 OID 26772)
+-- Name: koltuk_durumu_guncelle(integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.koltuk_durumu_guncelle(p_sefer_id integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_bilet_id INT; -- İlgili bilet_id'yi tutacak değişken
+BEGIN
+    -- Sefer_id'ye göre bilet_id'yi al
+    FOR v_bilet_id IN
+        SELECT bilet_id
+        FROM bilet
+        WHERE sefer_id = p_sefer_id
+    LOOP
+        -- OdemeIslemi tablosunda ödeme durumu kontrolü
+        IF EXISTS (
+            SELECT 1
+            FROM odemeislemi
+            WHERE bilet_id = v_bilet_id
+              AND odeme_durumu = TRUE
+        ) THEN
+            -- KoltukDurumu tablosunda koltuk_durumu'nu güncelle
+            UPDATE koltukdurumu
+            SET doluluk_durumu = TRUE
+            WHERE sefer_id = p_sefer_id;
+
+            -- Bilgilendirme mesajı
+            RAISE NOTICE 'Bilet ID % için koltuk durumu güncellendi.', v_bilet_id;
+        END IF;
+    END LOOP;
+END;
+$$;
+
+
+ALTER FUNCTION public.koltuk_durumu_guncelle(p_sefer_id integer) OWNER TO postgres;
+
+--
+-- TOC entry 268 (class 1255 OID 26630)
+-- Name: kontrol_odeme_durumu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.kontrol_odeme_durumu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Eğer ödeme durumu zaten TRUE ise, işlem yapılmasın
+    IF NEW.odeme_durumu = TRUE AND OLD.odeme_durumu = TRUE THEN
+        RAISE EXCEPTION 'Ödeme zaten yapılmış. Ödeme durumu zaten TRUE.';
+    END IF;
+    
+    -- Eğer ödeme durumu değişiyorsa, işlemi gerçekleştirin
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.kontrol_odeme_durumu() OWNER TO postgres;
+
+--
+-- TOC entry 270 (class 1255 OID 26769)
+-- Name: musteri_ekle(integer, character varying, character varying, character varying, date); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.musteri_ekle(p_id integer, p_ad character varying, p_email character varying, p_telefon_no character varying, p_dogum_tarihi date) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Musteri tablosuna doğrudan kayıt ekleme
+    INSERT INTO musteri (kullanici_id,kullanici_adi, email, telefon ,dogum_tarihi)
+    VALUES (p_id,p_ad,  p_email, p_telefon_no ,p_dogum_tarihi);
+
+    -- Bilgilendirme mesajı
+    RAISE NOTICE 'Yeni müşteri başarıyla eklendi: % %', p_id ,p_ad;
+END;
+$$;
+
+
+ALTER FUNCTION public.musteri_ekle(p_id integer, p_ad character varying, p_email character varying, p_telefon_no character varying, p_dogum_tarihi date) OWNER TO postgres;
+
+--
+-- TOC entry 269 (class 1255 OID 26763)
+-- Name: odeme_al(integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.odeme_al(p_bilet_id integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    v_bilet_fiyat NUMERIC; -- İlgili biletin fiyatını tutmak için değişken
+BEGIN
+    -- Biletler tablosundan bilet fiyatını al
+    SELECT bilet_fiyat 
+    INTO v_bilet_fiyat
+    FROM bilet
+    WHERE bilet_id = p_bilet_id;
+
+    -- Eğer bilet bulunamazsa hata fırlat
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Bilet ID % bulunamadı.', p_bilet_id;
+    END IF;
+
+    -- OdemeIslemi tablosunu güncelle
+    UPDATE odemeislemi
+    SET odeme_tarihi = CURRENT_DATE,
+        odeme_durumu = TRUE,
+        odeme_tutari = v_bilet_fiyat
+    WHERE bilet_id = p_bilet_id;
+
+    -- Eğer ödeme işlemi bulunamazsa hata fırlat
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Bilet ID % için ödeme işlemi bulunamadı.', p_bilet_id;
+    END IF;
+END;
+$$;
+
+
+ALTER FUNCTION public.odeme_al(p_bilet_id integer) OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- TOC entry 245 (class 1259 OID 25175)
+-- Name: bakimkaydi; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.bakimkaydi (
+    kayit_id integer NOT NULL,
+    otobus_id integer,
+    bakim_tarihi date,
+    yapilan_islem character varying(200)
+);
+
+
+ALTER TABLE public.bakimkaydi OWNER TO postgres;
+
+--
+-- TOC entry 244 (class 1259 OID 25174)
+-- Name: bakimkaydi_kayit_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.bakimkaydi_kayit_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.bakimkaydi_kayit_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5083 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: bakimkaydi_kayit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.bakimkaydi_kayit_id_seq OWNED BY public.bakimkaydi.kayit_id;
+
+
+--
+-- TOC entry 221 (class 1259 OID 24914)
+-- Name: bilet; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.bilet (
+    bilet_id integer NOT NULL,
+    bilet_no character varying(50),
+    bilet_fiyat numeric(10,2),
+    musteri_id integer,
+    sefer_id integer,
+    koltuk_id integer
+);
+
+
+ALTER TABLE public.bilet OWNER TO postgres;
+
+--
+-- TOC entry 220 (class 1259 OID 24913)
+-- Name: bilet_bilet_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.bilet_bilet_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.bilet_bilet_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5084 (class 0 OID 0)
+-- Dependencies: 220
+-- Name: bilet_bilet_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.bilet_bilet_id_seq OWNED BY public.bilet.bilet_id;
+
+
+--
+-- TOC entry 239 (class 1259 OID 25144)
+-- Name: firma; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.firma (
+    firma_id integer NOT NULL,
+    firma_adi character varying(100),
+    firma_turu character varying(50)
+);
+
+
+ALTER TABLE public.firma OWNER TO postgres;
+
+--
+-- TOC entry 246 (class 1259 OID 25186)
+-- Name: biletsatisfirmasi; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.biletsatisfirmasi (
+    satis_puan integer
+)
+INHERITS (public.firma);
+
+
+ALTER TABLE public.biletsatisfirmasi OWNER TO postgres;
+
+--
+-- TOC entry 231 (class 1259 OID 24990)
+-- Name: durak; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.durak (
+    durak_id integer NOT NULL,
+    sehir_id integer,
+    durak_adi character varying(100)
+);
+
+
+ALTER TABLE public.durak OWNER TO postgres;
+
+--
+-- TOC entry 230 (class 1259 OID 24989)
+-- Name: durak_durak_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.durak_durak_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.durak_durak_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5085 (class 0 OID 0)
+-- Dependencies: 230
+-- Name: durak_durak_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.durak_durak_id_seq OWNED BY public.durak.durak_id;
+
+
+--
+-- TOC entry 238 (class 1259 OID 25143)
+-- Name: firma_firma_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.firma_firma_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.firma_firma_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5086 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: firma_firma_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.firma_firma_id_seq OWNED BY public.firma.firma_id;
+
+
+--
+-- TOC entry 226 (class 1259 OID 24951)
+-- Name: guzergah; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.guzergah (
+    guzergah_id integer NOT NULL,
+    guzergah_adi character varying(100)
+);
+
+
+ALTER TABLE public.guzergah OWNER TO postgres;
+
+--
+-- TOC entry 225 (class 1259 OID 24950)
+-- Name: guzergah_guzergah_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.guzergah_guzergah_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.guzergah_guzergah_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5087 (class 0 OID 0)
+-- Dependencies: 225
+-- Name: guzergah_guzergah_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.guzergah_guzergah_id_seq OWNED BY public.guzergah.guzergah_id;
+
+
+--
+-- TOC entry 229 (class 1259 OID 24974)
+-- Name: guzergahsehir; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.guzergahsehir (
+    guzergah_id integer NOT NULL,
+    sehir_id integer NOT NULL
+);
+
+
+ALTER TABLE public.guzergahsehir OWNER TO postgres;
+
+--
+-- TOC entry 235 (class 1259 OID 25014)
+-- Name: koltukdurumu; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.koltukdurumu (
+    koltuk_id integer NOT NULL,
+    sefer_id integer,
+    koltuk_no integer,
+    doluluk_durumu boolean
+);
+
+
+ALTER TABLE public.koltukdurumu OWNER TO postgres;
+
+--
+-- TOC entry 234 (class 1259 OID 25013)
+-- Name: koltukdurumu_koltuk_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.koltukdurumu_koltuk_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.koltukdurumu_koltuk_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5088 (class 0 OID 0)
+-- Dependencies: 234
+-- Name: koltukdurumu_koltuk_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.koltukdurumu_koltuk_id_seq OWNED BY public.koltukdurumu.koltuk_id;
+
+
+--
+-- TOC entry 218 (class 1259 OID 24900)
+-- Name: kullanici; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.kullanici (
+    kullanici_id integer NOT NULL,
+    kullanici_adi character varying(100),
+    email character varying(100),
+    telefon character varying(15),
+    kullanici_turu character varying(100)
+);
+
+
+ALTER TABLE public.kullanici OWNER TO postgres;
+
+--
+-- TOC entry 217 (class 1259 OID 24899)
+-- Name: kullanici_kullanici_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.kullanici_kullanici_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.kullanici_kullanici_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5089 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: kullanici_kullanici_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.kullanici_kullanici_id_seq OWNED BY public.kullanici.kullanici_id;
+
+
+--
+-- TOC entry 219 (class 1259 OID 24909)
+-- Name: musteri; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.musteri (
+    adres character varying(200),
+    dogum_tarihi date
+)
+INHERITS (public.kullanici);
+
+
+ALTER TABLE public.musteri OWNER TO postgres;
+
+--
+-- TOC entry 252 (class 1259 OID 25270)
+-- Name: musteripromosyon; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.musteripromosyon (
+    musteri_id integer,
+    promosyon_id integer,
+    kullanildi boolean DEFAULT false
+);
+
+
+ALTER TABLE public.musteripromosyon OWNER TO postgres;
+
+--
+-- TOC entry 224 (class 1259 OID 24930)
+-- Name: odemeislemi; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.odemeislemi (
+    odeme_id integer NOT NULL,
+    bilet_id integer,
+    odeme_tarihi date,
+    odeme_tutari numeric(10,2),
+    odeme_durumu boolean
+);
+
+
+ALTER TABLE public.odemeislemi OWNER TO postgres;
+
+--
+-- TOC entry 223 (class 1259 OID 24929)
+-- Name: odemeislemi_odeme_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.odemeislemi_odeme_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.odemeislemi_odeme_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5090 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: odemeislemi_odeme_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.odemeislemi_odeme_id_seq OWNED BY public.odemeislemi.odeme_id;
+
+
+--
+-- TOC entry 243 (class 1259 OID 25163)
+-- Name: otobus; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.otobus (
+    otobus_id integer NOT NULL,
+    model character varying(100),
+    kapasite integer,
+    firma_id integer
+);
+
+
+ALTER TABLE public.otobus OWNER TO postgres;
+
+--
+-- TOC entry 242 (class 1259 OID 25162)
+-- Name: otobus_otobus_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.otobus_otobus_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.otobus_otobus_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5091 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: otobus_otobus_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.otobus_otobus_id_seq OWNED BY public.otobus.otobus_id;
+
+
+--
+-- TOC entry 247 (class 1259 OID 25190)
+-- Name: otobusfirmasi; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.otobusfirmasi (
+    otobus_adedi integer
+)
+INHERITS (public.firma);
+
+
+ALTER TABLE public.otobusfirmasi OWNER TO postgres;
+
+--
+-- TOC entry 251 (class 1259 OID 25226)
+-- Name: promosyon; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.promosyon (
+    promosyon_id integer NOT NULL,
+    promo_kodu character varying(20),
+    indirim_orani numeric(5,2)
+);
+
+
+ALTER TABLE public.promosyon OWNER TO postgres;
+
+--
+-- TOC entry 250 (class 1259 OID 25225)
+-- Name: promosyon_promosyon_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.promosyon_promosyon_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.promosyon_promosyon_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5092 (class 0 OID 0)
+-- Dependencies: 250
+-- Name: promosyon_promosyon_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.promosyon_promosyon_id_seq OWNED BY public.promosyon.promosyon_id;
+
+
+--
+-- TOC entry 237 (class 1259 OID 25125)
+-- Name: rezervasyon; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.rezervasyon (
+    rezervasyon_id integer NOT NULL,
+    rezervasyon_tarihi date,
+    bilet_no character varying(50),
+    musteri_id integer,
+    durum boolean
+);
+
+
+ALTER TABLE public.rezervasyon OWNER TO postgres;
+
+--
+-- TOC entry 236 (class 1259 OID 25124)
+-- Name: rezervasyon_rezervasyon_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.rezervasyon_rezervasyon_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.rezervasyon_rezervasyon_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5093 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: rezervasyon_rezervasyon_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.rezervasyon_rezervasyon_id_seq OWNED BY public.rezervasyon.rezervasyon_id;
+
+
+--
+-- TOC entry 233 (class 1259 OID 25002)
+-- Name: sefer; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.sefer (
+    sefer_id integer NOT NULL,
+    tarih date,
+    saat time without time zone,
+    otobus_id integer,
+    "güzergah_id" integer
+);
+
+
+ALTER TABLE public.sefer OWNER TO postgres;
+
+--
+-- TOC entry 232 (class 1259 OID 25001)
+-- Name: sefer_sefer_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.sefer_sefer_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sefer_sefer_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5094 (class 0 OID 0)
+-- Dependencies: 232
+-- Name: sefer_sefer_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.sefer_sefer_id_seq OWNED BY public.sefer.sefer_id;
+
+
+--
+-- TOC entry 249 (class 1259 OID 25210)
+-- Name: seferdurak; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.seferdurak (
+    sefer_id integer NOT NULL,
+    durak_id integer NOT NULL
+);
+
+
+ALTER TABLE public.seferdurak OWNER TO postgres;
+
+--
+-- TOC entry 248 (class 1259 OID 25195)
+-- Name: sefersehir; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.sefersehir (
+    sefer_id integer NOT NULL,
+    sehir_id integer NOT NULL
+);
+
+
+ALTER TABLE public.sefersehir OWNER TO postgres;
+
+--
+-- TOC entry 228 (class 1259 OID 24968)
+-- Name: sehir; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.sehir (
+    sehir_id integer NOT NULL,
+    sehir_adi character varying(100)
+);
+
+
+ALTER TABLE public.sehir OWNER TO postgres;
+
+--
+-- TOC entry 227 (class 1259 OID 24967)
+-- Name: sehir_sehir_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.sehir_sehir_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sehir_sehir_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5095 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: sehir_sehir_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.sehir_sehir_id_seq OWNED BY public.sehir.sehir_id;
+
+
+--
+-- TOC entry 241 (class 1259 OID 25151)
+-- Name: sofor; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.sofor (
+    sofor_id integer NOT NULL,
+    ad_soyad character varying(100),
+    firma_id integer
+);
+
+
+ALTER TABLE public.sofor OWNER TO postgres;
+
+--
+-- TOC entry 240 (class 1259 OID 25150)
+-- Name: sofor_sofor_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.sofor_sofor_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.sofor_sofor_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5096 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: sofor_sofor_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.sofor_sofor_id_seq OWNED BY public.sofor.sofor_id;
+
+
+--
+-- TOC entry 222 (class 1259 OID 24925)
+-- Name: yonetici; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.yonetici (
+    yonetici_pozisyonu character varying(100)
+)
+INHERITS (public.kullanici);
+
+
+ALTER TABLE public.yonetici OWNER TO postgres;
+
+--
+-- TOC entry 4816 (class 2604 OID 25178)
+-- Name: bakimkaydi kayit_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bakimkaydi ALTER COLUMN kayit_id SET DEFAULT nextval('public.bakimkaydi_kayit_id_seq'::regclass);
+
+
+--
+-- TOC entry 4803 (class 2604 OID 24917)
+-- Name: bilet bilet_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet ALTER COLUMN bilet_id SET DEFAULT nextval('public.bilet_bilet_id_seq'::regclass);
+
+
+--
+-- TOC entry 4817 (class 2604 OID 25189)
+-- Name: biletsatisfirmasi firma_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.biletsatisfirmasi ALTER COLUMN firma_id SET DEFAULT nextval('public.firma_firma_id_seq'::regclass);
+
+
+--
+-- TOC entry 4818 (class 2604 OID 26649)
+-- Name: biletsatisfirmasi firma_turu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.biletsatisfirmasi ALTER COLUMN firma_turu SET DEFAULT 'bilet'::character varying;
+
+
+--
+-- TOC entry 4809 (class 2604 OID 24993)
+-- Name: durak durak_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.durak ALTER COLUMN durak_id SET DEFAULT nextval('public.durak_durak_id_seq'::regclass);
+
+
+--
+-- TOC entry 4813 (class 2604 OID 25147)
+-- Name: firma firma_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.firma ALTER COLUMN firma_id SET DEFAULT nextval('public.firma_firma_id_seq'::regclass);
+
+
+--
+-- TOC entry 4807 (class 2604 OID 24954)
+-- Name: guzergah guzergah_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.guzergah ALTER COLUMN guzergah_id SET DEFAULT nextval('public.guzergah_guzergah_id_seq'::regclass);
+
+
+--
+-- TOC entry 4811 (class 2604 OID 25017)
+-- Name: koltukdurumu koltuk_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.koltukdurumu ALTER COLUMN koltuk_id SET DEFAULT nextval('public.koltukdurumu_koltuk_id_seq'::regclass);
+
+
+--
+-- TOC entry 4800 (class 2604 OID 24903)
+-- Name: kullanici kullanici_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kullanici ALTER COLUMN kullanici_id SET DEFAULT nextval('public.kullanici_kullanici_id_seq'::regclass);
+
+
+--
+-- TOC entry 4801 (class 2604 OID 24912)
+-- Name: musteri kullanici_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.musteri ALTER COLUMN kullanici_id SET DEFAULT nextval('public.kullanici_kullanici_id_seq'::regclass);
+
+
+--
+-- TOC entry 4802 (class 2604 OID 26652)
+-- Name: musteri kullanici_turu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.musteri ALTER COLUMN kullanici_turu SET DEFAULT 'musteri'::character varying;
+
+
+--
+-- TOC entry 4806 (class 2604 OID 24933)
+-- Name: odemeislemi odeme_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.odemeislemi ALTER COLUMN odeme_id SET DEFAULT nextval('public.odemeislemi_odeme_id_seq'::regclass);
+
+
+--
+-- TOC entry 4815 (class 2604 OID 25166)
+-- Name: otobus otobus_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobus ALTER COLUMN otobus_id SET DEFAULT nextval('public.otobus_otobus_id_seq'::regclass);
+
+
+--
+-- TOC entry 4819 (class 2604 OID 25193)
+-- Name: otobusfirmasi firma_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobusfirmasi ALTER COLUMN firma_id SET DEFAULT nextval('public.firma_firma_id_seq'::regclass);
+
+
+--
+-- TOC entry 4820 (class 2604 OID 26648)
+-- Name: otobusfirmasi firma_turu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobusfirmasi ALTER COLUMN firma_turu SET DEFAULT 'otobus'::character varying;
+
+
+--
+-- TOC entry 4821 (class 2604 OID 25229)
+-- Name: promosyon promosyon_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.promosyon ALTER COLUMN promosyon_id SET DEFAULT nextval('public.promosyon_promosyon_id_seq'::regclass);
+
+
+--
+-- TOC entry 4812 (class 2604 OID 25128)
+-- Name: rezervasyon rezervasyon_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.rezervasyon ALTER COLUMN rezervasyon_id SET DEFAULT nextval('public.rezervasyon_rezervasyon_id_seq'::regclass);
+
+
+--
+-- TOC entry 4810 (class 2604 OID 25005)
+-- Name: sefer sefer_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefer ALTER COLUMN sefer_id SET DEFAULT nextval('public.sefer_sefer_id_seq'::regclass);
+
+
+--
+-- TOC entry 4808 (class 2604 OID 24971)
+-- Name: sehir sehir_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sehir ALTER COLUMN sehir_id SET DEFAULT nextval('public.sehir_sehir_id_seq'::regclass);
+
+
+--
+-- TOC entry 4814 (class 2604 OID 25154)
+-- Name: sofor sofor_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sofor ALTER COLUMN sofor_id SET DEFAULT nextval('public.sofor_sofor_id_seq'::regclass);
+
+
+--
+-- TOC entry 4804 (class 2604 OID 24928)
+-- Name: yonetici kullanici_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.yonetici ALTER COLUMN kullanici_id SET DEFAULT nextval('public.kullanici_kullanici_id_seq'::regclass);
+
+
+--
+-- TOC entry 4805 (class 2604 OID 26653)
+-- Name: yonetici kullanici_turu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.yonetici ALTER COLUMN kullanici_turu SET DEFAULT 'yonetici'::character varying;
+
+
+--
+-- TOC entry 5070 (class 0 OID 25175)
+-- Dependencies: 245
+-- Data for Name: bakimkaydi; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.bakimkaydi (kayit_id, otobus_id, bakim_tarihi, yapilan_islem) FROM stdin;
+1	1	2024-12-12	yag degisimi
+2	2	2024-10-10	genel bakim
+3	3	2024-11-11	motor bakimi
+\.
+
+
+--
+-- TOC entry 5046 (class 0 OID 24914)
+-- Dependencies: 221
+-- Data for Name: bilet; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.bilet (bilet_id, bilet_no, bilet_fiyat, musteri_id, sefer_id, koltuk_id) FROM stdin;
+1	B0001	100.00	38	1	1
+2	B0002	100.00	39	2	2
+3	B0003	100.00	40	3	2
+4	\N	\N	38	\N	\N
+5	\N	500.00	38	\N	\N
+6	B0004	100.00	\N	1	1
+8	B0006	100.00	\N	3	2
+7	B0005	100.00	38	2	2
+\.
+
+
+--
+-- TOC entry 5071 (class 0 OID 25186)
+-- Dependencies: 246
+-- Data for Name: biletsatisfirmasi; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.biletsatisfirmasi (firma_id, firma_adi, firma_turu, satis_puan) FROM stdin;
+38	solmazlar	bilet	10
+39	yıldızlar	bilet	20
+40	koc	bilet	30
+\.
+
+
+--
+-- TOC entry 5056 (class 0 OID 24990)
+-- Dependencies: 231
+-- Data for Name: durak; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.durak (durak_id, sehir_id, durak_adi) FROM stdin;
+1	1	eskisehir
+2	2	ankara
+3	3	istanbul
+\.
+
+
+--
+-- TOC entry 5064 (class 0 OID 25144)
+-- Dependencies: 239
+-- Data for Name: firma; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.firma (firma_id, firma_adi, firma_turu) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5051 (class 0 OID 24951)
+-- Dependencies: 226
+-- Data for Name: guzergah; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.guzergah (guzergah_id, guzergah_adi) FROM stdin;
+1	marmara
+2	d100
+3	anadolu
+\.
+
+
+--
+-- TOC entry 5054 (class 0 OID 24974)
+-- Dependencies: 229
+-- Data for Name: guzergahsehir; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.guzergahsehir (guzergah_id, sehir_id) FROM stdin;
+1	1
+2	2
+3	3
+\.
+
+
+--
+-- TOC entry 5060 (class 0 OID 25014)
+-- Dependencies: 235
+-- Data for Name: koltukdurumu; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.koltukdurumu (koltuk_id, sefer_id, koltuk_no, doluluk_durumu) FROM stdin;
+2	2	2	f
+3	3	3	f
+1	1	1	t
+\.
+
+
+--
+-- TOC entry 5043 (class 0 OID 24900)
+-- Dependencies: 218
+-- Data for Name: kullanici; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.kullanici (kullanici_id, kullanici_adi, email, telefon, kullanici_turu) FROM stdin;
+\.
+
+
+--
+-- TOC entry 5044 (class 0 OID 24909)
+-- Dependencies: 219
+-- Data for Name: musteri; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.musteri (kullanici_id, kullanici_adi, email, telefon, adres, dogum_tarihi, kullanici_turu) FROM stdin;
+38	Yılmaz	ahmet.yilmaz@ornek.com	5551234567	\N	2004-12-12	musteri
+39	Yunus	yunus@ornek.com	5674334	\N	2000-12-12	musteri
+40	solmaz	solmaz@ornek.com	1111111	\N	1999-12-12	musteri
+41	kerem	kerem@ezample.com	1111111	\N	2023-12-12	musteri
+\.
+
+
+--
+-- TOC entry 5077 (class 0 OID 25270)
+-- Dependencies: 252
+-- Data for Name: musteripromosyon; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.musteripromosyon (musteri_id, promosyon_id, kullanildi) FROM stdin;
+38	38	f
+39	39	f
+40	40	f
+\.
+
+
+--
+-- TOC entry 5049 (class 0 OID 24930)
+-- Dependencies: 224
+-- Data for Name: odemeislemi; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.odemeislemi (odeme_id, bilet_id, odeme_tarihi, odeme_tutari, odeme_durumu) FROM stdin;
+2	2	\N	\N	f
+3	3	\N	\N	f
+8	4	2024-12-22	\N	t
+9	5	2024-12-22	500.00	t
+1	1	2024-12-22	100.00	t
+\.
+
+
+--
+-- TOC entry 5068 (class 0 OID 25163)
+-- Dependencies: 243
+-- Data for Name: otobus; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.otobus (otobus_id, model, kapasite, firma_id) FROM stdin;
+1	mercedes	28	41
+2	man	58	42
+3	man	63	43
+\.
+
+
+--
+-- TOC entry 5072 (class 0 OID 25190)
+-- Dependencies: 247
+-- Data for Name: otobusfirmasi; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.otobusfirmasi (firma_id, firma_adi, firma_turu, otobus_adedi) FROM stdin;
+41	solmazlar	otobus	100
+42	yıldızlar	otobus	120
+43	koc	otobus	150
+\.
+
+
+--
+-- TOC entry 5076 (class 0 OID 25226)
+-- Dependencies: 251
+-- Data for Name: promosyon; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.promosyon (promosyon_id, promo_kodu, indirim_orani) FROM stdin;
+38	A10	10.00
+39	A20	20.00
+40	A30	30.00
+\.
+
+
+--
+-- TOC entry 5062 (class 0 OID 25125)
+-- Dependencies: 237
+-- Data for Name: rezervasyon; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.rezervasyon (rezervasyon_id, rezervasyon_tarihi, bilet_no, musteri_id, durum) FROM stdin;
+1	2024-12-12	B0001	38	f
+2	2024-12-12	B0002	39	f
+3	2024-12-12	B0003	40	f
+\.
+
+
+--
+-- TOC entry 5058 (class 0 OID 25002)
+-- Dependencies: 233
+-- Data for Name: sefer; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.sefer (sefer_id, tarih, saat, otobus_id, "güzergah_id") FROM stdin;
+1	2025-10-10	12:00:00	1	1
+2	2024-12-12	12:00:00	2	2
+3	2024-12-10	12:00:00	3	3
+\.
+
+
+--
+-- TOC entry 5074 (class 0 OID 25210)
+-- Dependencies: 249
+-- Data for Name: seferdurak; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.seferdurak (sefer_id, durak_id) FROM stdin;
+1	1
+2	2
+3	3
+\.
+
+
+--
+-- TOC entry 5073 (class 0 OID 25195)
+-- Dependencies: 248
+-- Data for Name: sefersehir; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.sefersehir (sefer_id, sehir_id) FROM stdin;
+1	1
+2	2
+3	3
+\.
+
+
+--
+-- TOC entry 5053 (class 0 OID 24968)
+-- Dependencies: 228
+-- Data for Name: sehir; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.sehir (sehir_id, sehir_adi) FROM stdin;
+1	eskisehir
+2	afyon
+3	sakarya
+\.
+
+
+--
+-- TOC entry 5066 (class 0 OID 25151)
+-- Dependencies: 241
+-- Data for Name: sofor; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.sofor (sofor_id, ad_soyad, firma_id) FROM stdin;
+1	ali solmaz	41
+2	yunus yıldız	42
+3	ihsan e	43
+\.
+
+
+--
+-- TOC entry 5047 (class 0 OID 24925)
+-- Dependencies: 222
+-- Data for Name: yonetici; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.yonetici (kullanici_id, kullanici_adi, email, telefon, yonetici_pozisyonu, kullanici_turu) FROM stdin;
+35	Yılmaz	ahmet.yilmaz@ornek.com	5551234567	Bilgi Teknolojileri	yonetici
+36	Yunus	yunus@ornek.com	5674334	admin	yonetici
+37	solmaz	solmaz@ornek.com	1111111	administor	yonetici
+\.
+
+
+--
+-- TOC entry 5097 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: bakimkaydi_kayit_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.bakimkaydi_kayit_id_seq', 10, true);
+
+
+--
+-- TOC entry 5098 (class 0 OID 0)
+-- Dependencies: 220
+-- Name: bilet_bilet_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.bilet_bilet_id_seq', 24, true);
+
+
+--
+-- TOC entry 5099 (class 0 OID 0)
+-- Dependencies: 230
+-- Name: durak_durak_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.durak_durak_id_seq', 1, false);
+
+
+--
+-- TOC entry 5100 (class 0 OID 0)
+-- Dependencies: 238
+-- Name: firma_firma_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.firma_firma_id_seq', 1, false);
+
+
+--
+-- TOC entry 5101 (class 0 OID 0)
+-- Dependencies: 225
+-- Name: guzergah_guzergah_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.guzergah_guzergah_id_seq', 1, false);
+
+
+--
+-- TOC entry 5102 (class 0 OID 0)
+-- Dependencies: 234
+-- Name: koltukdurumu_koltuk_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.koltukdurumu_koltuk_id_seq', 6, true);
+
+
+--
+-- TOC entry 5103 (class 0 OID 0)
+-- Dependencies: 217
+-- Name: kullanici_kullanici_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.kullanici_kullanici_id_seq', 17, true);
+
+
+--
+-- TOC entry 5104 (class 0 OID 0)
+-- Dependencies: 223
+-- Name: odemeislemi_odeme_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.odemeislemi_odeme_id_seq', 9, true);
+
+
+--
+-- TOC entry 5105 (class 0 OID 0)
+-- Dependencies: 242
+-- Name: otobus_otobus_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.otobus_otobus_id_seq', 6, true);
+
+
+--
+-- TOC entry 5106 (class 0 OID 0)
+-- Dependencies: 250
+-- Name: promosyon_promosyon_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.promosyon_promosyon_id_seq', 3, true);
+
+
+--
+-- TOC entry 5107 (class 0 OID 0)
+-- Dependencies: 236
+-- Name: rezervasyon_rezervasyon_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.rezervasyon_rezervasyon_id_seq', 4, true);
+
+
+--
+-- TOC entry 5108 (class 0 OID 0)
+-- Dependencies: 232
+-- Name: sefer_sefer_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.sefer_sefer_id_seq', 1, false);
+
+
+--
+-- TOC entry 5109 (class 0 OID 0)
+-- Dependencies: 227
+-- Name: sehir_sehir_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.sehir_sehir_id_seq', 1, false);
+
+
+--
+-- TOC entry 5110 (class 0 OID 0)
+-- Dependencies: 240
+-- Name: sofor_sofor_id_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.sofor_sofor_id_seq', 1, false);
+
+
+--
+-- TOC entry 4860 (class 2606 OID 25180)
+-- Name: bakimkaydi bakimkaydi_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bakimkaydi
+    ADD CONSTRAINT bakimkaydi_pkey PRIMARY KEY (kayit_id);
+
+
+--
+-- TOC entry 4828 (class 2606 OID 24919)
+-- Name: bilet bilet_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet
+    ADD CONSTRAINT bilet_pkey PRIMARY KEY (bilet_id);
+
+
+--
+-- TOC entry 4862 (class 2606 OID 25248)
+-- Name: biletsatisfirmasi biletsatisfirmasi_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.biletsatisfirmasi
+    ADD CONSTRAINT biletsatisfirmasi_pkey PRIMARY KEY (firma_id);
+
+
+--
+-- TOC entry 4844 (class 2606 OID 24995)
+-- Name: durak durak_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.durak
+    ADD CONSTRAINT durak_pkey PRIMARY KEY (durak_id);
+
+
+--
+-- TOC entry 4854 (class 2606 OID 25149)
+-- Name: firma firma_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.firma
+    ADD CONSTRAINT firma_pkey PRIMARY KEY (firma_id);
+
+
+--
+-- TOC entry 4838 (class 2606 OID 24956)
+-- Name: guzergah guzergah_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.guzergah
+    ADD CONSTRAINT guzergah_pkey PRIMARY KEY (guzergah_id);
+
+
+--
+-- TOC entry 4842 (class 2606 OID 24978)
+-- Name: guzergahsehir guzergahsehir_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.guzergahsehir
+    ADD CONSTRAINT guzergahsehir_pkey PRIMARY KEY (guzergah_id, sehir_id);
+
+
+--
+-- TOC entry 4848 (class 2606 OID 25019)
+-- Name: koltukdurumu koltukdurumu_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.koltukdurumu
+    ADD CONSTRAINT koltukdurumu_pkey PRIMARY KEY (koltuk_id);
+
+
+--
+-- TOC entry 4824 (class 2606 OID 24905)
+-- Name: kullanici kullanici_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kullanici
+    ADD CONSTRAINT kullanici_pkey PRIMARY KEY (kullanici_id);
+
+
+--
+-- TOC entry 4826 (class 2606 OID 25123)
+-- Name: musteri musteri_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.musteri
+    ADD CONSTRAINT musteri_pkey PRIMARY KEY (kullanici_id);
+
+
+--
+-- TOC entry 4834 (class 2606 OID 24937)
+-- Name: odemeislemi odemeislemi_bilet_id_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.odemeislemi
+    ADD CONSTRAINT odemeislemi_bilet_id_key UNIQUE (bilet_id);
+
+
+--
+-- TOC entry 4836 (class 2606 OID 24935)
+-- Name: odemeislemi odemeislemi_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.odemeislemi
+    ADD CONSTRAINT odemeislemi_pkey PRIMARY KEY (odeme_id);
+
+
+--
+-- TOC entry 4858 (class 2606 OID 25168)
+-- Name: otobus otobus_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobus
+    ADD CONSTRAINT otobus_pkey PRIMARY KEY (otobus_id);
+
+
+--
+-- TOC entry 4864 (class 2606 OID 25250)
+-- Name: otobusfirmasi otobusfirmasi_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobusfirmasi
+    ADD CONSTRAINT otobusfirmasi_pkey PRIMARY KEY (firma_id);
+
+
+--
+-- TOC entry 4870 (class 2606 OID 25231)
+-- Name: promosyon promosyon_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.promosyon
+    ADD CONSTRAINT promosyon_pkey PRIMARY KEY (promosyon_id);
+
+
+--
+-- TOC entry 4850 (class 2606 OID 25130)
+-- Name: rezervasyon rezervasyon_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.rezervasyon
+    ADD CONSTRAINT rezervasyon_pkey PRIMARY KEY (rezervasyon_id);
+
+
+--
+-- TOC entry 4846 (class 2606 OID 25007)
+-- Name: sefer sefer_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefer
+    ADD CONSTRAINT sefer_pkey PRIMARY KEY (sefer_id);
+
+
+--
+-- TOC entry 4868 (class 2606 OID 25214)
+-- Name: seferdurak seferdurak_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.seferdurak
+    ADD CONSTRAINT seferdurak_pkey PRIMARY KEY (sefer_id, durak_id);
+
+
+--
+-- TOC entry 4866 (class 2606 OID 25199)
+-- Name: sefersehir sefersehir_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefersehir
+    ADD CONSTRAINT sefersehir_pkey PRIMARY KEY (sefer_id, sehir_id);
+
+
+--
+-- TOC entry 4840 (class 2606 OID 24973)
+-- Name: sehir sehir_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sehir
+    ADD CONSTRAINT sehir_pkey PRIMARY KEY (sehir_id);
+
+
+--
+-- TOC entry 4856 (class 2606 OID 25156)
+-- Name: sofor sofor_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sofor
+    ADD CONSTRAINT sofor_pkey PRIMARY KEY (sofor_id);
+
+
+--
+-- TOC entry 4830 (class 2606 OID 26638)
+-- Name: bilet unique_bilet_no; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet
+    ADD CONSTRAINT unique_bilet_no UNIQUE (bilet_no);
+
+
+--
+-- TOC entry 4852 (class 2606 OID 26647)
+-- Name: rezervasyon unique_bilet_no_new; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.rezervasyon
+    ADD CONSTRAINT unique_bilet_no_new UNIQUE (bilet_no);
+
+
+--
+-- TOC entry 4832 (class 2606 OID 25121)
+-- Name: yonetici yonetici_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.yonetici
+    ADD CONSTRAINT yonetici_pkey PRIMARY KEY (kullanici_id);
+
+
+--
+-- TOC entry 4895 (class 2620 OID 26623)
+-- Name: yonetici disjoint_check; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER disjoint_check BEFORE INSERT ON public.yonetici FOR EACH ROW EXECUTE FUNCTION public.check_disjoint_rule();
+
+
+--
+-- TOC entry 4893 (class 2620 OID 26624)
+-- Name: musteri disjoint_check_customer; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER disjoint_check_customer BEFORE INSERT ON public.musteri FOR EACH ROW EXECUTE FUNCTION public.check_disjoint_rule();
+
+
+--
+-- TOC entry 4896 (class 2620 OID 26631)
+-- Name: odemeislemi odeme_durumu_kontrol_trigger; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER odeme_durumu_kontrol_trigger BEFORE UPDATE ON public.odemeislemi FOR EACH ROW EXECUTE FUNCTION public.kontrol_odeme_durumu();
+
+
+--
+-- TOC entry 4892 (class 2620 OID 26613)
+-- Name: kullanici trigger_check_total_inheritance_before_insert; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trigger_check_total_inheritance_before_insert BEFORE INSERT ON public.kullanici FOR EACH ROW EXECUTE FUNCTION public.check_total_inheritance_before_insert();
+
+
+--
+-- TOC entry 4894 (class 2620 OID 25269)
+-- Name: musteri trigger_check_unique_email_before_insert; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER trigger_check_unique_email_before_insert BEFORE INSERT ON public.musteri FOR EACH ROW EXECUTE FUNCTION public.check_unique_email_before_insert();
+
+
+--
+-- TOC entry 4885 (class 2606 OID 26684)
+-- Name: bakimkaydi bakimkaydi_otobus_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bakimkaydi
+    ADD CONSTRAINT bakimkaydi_otobus_id_fkey FOREIGN KEY (otobus_id) REFERENCES public.otobus(otobus_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4871 (class 2606 OID 26739)
+-- Name: bilet bilet_koltuk_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet
+    ADD CONSTRAINT bilet_koltuk_id_fkey FOREIGN KEY (koltuk_id) REFERENCES public.koltukdurumu(koltuk_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4872 (class 2606 OID 26749)
+-- Name: bilet bilet_musteri_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet
+    ADD CONSTRAINT bilet_musteri_id_fkey FOREIGN KEY (musteri_id) REFERENCES public.musteri(kullanici_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4873 (class 2606 OID 26744)
+-- Name: bilet bilet_sefer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.bilet
+    ADD CONSTRAINT bilet_sefer_id_fkey FOREIGN KEY (sefer_id) REFERENCES public.sefer(sefer_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4877 (class 2606 OID 26704)
+-- Name: durak durak_sehir_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.durak
+    ADD CONSTRAINT durak_sehir_id_fkey FOREIGN KEY (sehir_id) REFERENCES public.sehir(sehir_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4875 (class 2606 OID 26694)
+-- Name: guzergahsehir guzergahsehir_guzergah_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.guzergahsehir
+    ADD CONSTRAINT guzergahsehir_guzergah_id_fkey FOREIGN KEY (guzergah_id) REFERENCES public.guzergah(guzergah_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4876 (class 2606 OID 26699)
+-- Name: guzergahsehir guzergahsehir_sehir_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.guzergahsehir
+    ADD CONSTRAINT guzergahsehir_sehir_id_fkey FOREIGN KEY (sehir_id) REFERENCES public.sehir(sehir_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4880 (class 2606 OID 26724)
+-- Name: koltukdurumu koltukdurumu_sefer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.koltukdurumu
+    ADD CONSTRAINT koltukdurumu_sefer_id_fkey FOREIGN KEY (sefer_id) REFERENCES public.sefer(sefer_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4890 (class 2606 OID 26669)
+-- Name: musteripromosyon musteripromosyon_musteri_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.musteripromosyon
+    ADD CONSTRAINT musteripromosyon_musteri_id_fkey FOREIGN KEY (musteri_id) REFERENCES public.musteri(kullanici_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4891 (class 2606 OID 26689)
+-- Name: musteripromosyon musteripromosyon_promosyon_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.musteripromosyon
+    ADD CONSTRAINT musteripromosyon_promosyon_id_fkey FOREIGN KEY (promosyon_id) REFERENCES public.promosyon(promosyon_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4874 (class 2606 OID 26674)
+-- Name: odemeislemi odemeislemi_bilet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.odemeislemi
+    ADD CONSTRAINT odemeislemi_bilet_id_fkey FOREIGN KEY (bilet_id) REFERENCES public.bilet(bilet_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4884 (class 2606 OID 26679)
+-- Name: otobus otobus_firma_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.otobus
+    ADD CONSTRAINT otobus_firma_id_fkey FOREIGN KEY (firma_id) REFERENCES public.otobusfirmasi(firma_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4881 (class 2606 OID 26754)
+-- Name: rezervasyon rezervasyon_bilet_no_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.rezervasyon
+    ADD CONSTRAINT rezervasyon_bilet_no_fkey FOREIGN KEY (bilet_no) REFERENCES public.bilet(bilet_no) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4882 (class 2606 OID 25131)
+-- Name: rezervasyon rezervasyon_musteri_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.rezervasyon
+    ADD CONSTRAINT rezervasyon_musteri_id_fkey FOREIGN KEY (musteri_id) REFERENCES public.musteri(kullanici_id);
+
+
+--
+-- TOC entry 4878 (class 2606 OID 26734)
+-- Name: sefer sefer_guzergah_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefer
+    ADD CONSTRAINT sefer_guzergah_id_fkey FOREIGN KEY ("güzergah_id") REFERENCES public.guzergah(guzergah_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4879 (class 2606 OID 26729)
+-- Name: sefer sefer_otobus_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefer
+    ADD CONSTRAINT sefer_otobus_id_fkey FOREIGN KEY (otobus_id) REFERENCES public.otobus(otobus_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4888 (class 2606 OID 25220)
+-- Name: seferdurak seferdurak_durak_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.seferdurak
+    ADD CONSTRAINT seferdurak_durak_id_fkey FOREIGN KEY (durak_id) REFERENCES public.durak(durak_id);
+
+
+--
+-- TOC entry 4889 (class 2606 OID 25215)
+-- Name: seferdurak seferdurak_sefer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.seferdurak
+    ADD CONSTRAINT seferdurak_sefer_id_fkey FOREIGN KEY (sefer_id) REFERENCES public.sefer(sefer_id);
+
+
+--
+-- TOC entry 4886 (class 2606 OID 26709)
+-- Name: sefersehir sefersehir_sefer_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefersehir
+    ADD CONSTRAINT sefersehir_sefer_id_fkey FOREIGN KEY (sefer_id) REFERENCES public.sefer(sefer_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4887 (class 2606 OID 26714)
+-- Name: sefersehir sefersehir_sehir_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sefersehir
+    ADD CONSTRAINT sefersehir_sehir_id_fkey FOREIGN KEY (sehir_id) REFERENCES public.sehir(sehir_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+--
+-- TOC entry 4883 (class 2606 OID 26719)
+-- Name: sofor sofor_firma_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.sofor
+    ADD CONSTRAINT sofor_firma_id_fkey FOREIGN KEY (firma_id) REFERENCES public.otobusfirmasi(firma_id) ON UPDATE CASCADE ON DELETE CASCADE NOT VALID;
+
+
+-- Completed on 2024-12-23 15:02:15
+
+--
+-- PostgreSQL database dump complete
+--
+
